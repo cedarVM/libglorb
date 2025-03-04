@@ -9,12 +9,8 @@ int x, y;
 };
 
 struct gcontext {
+Drawable asset;
 GC gc;
-char uses_mask;
-Drawable planet;
-Pixmap   planet_mask;
-struct coord planet_loca;
-int height, width;
 };
 
 struct user_context {
@@ -24,7 +20,11 @@ struct orbital *current_orbital;
 
 struct orbital {
 Display *dis;
-struct gcontext *graphics;
+
+struct coord parent_mapping;
+int asset_height, asset_width;
+struct gcontext *planet; // prev graphics
+struct gcontext *mask; // is already a boolean
 // may need to steal this pointer
 // in the future (think orange tile)
 
@@ -71,12 +71,13 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
   struct orbital *allocation;
 
   allocation = malloc(sizeof(struct orbital));
-  allocation->graphics = malloc(sizeof(struct gcontext));
+  allocation->planet = malloc(sizeof(struct gcontext));
+  allocation->mask   = 0;
 
-  allocation->graphics->planet_loca.x = dimensions[0]; // will these be max screen size for all windows?
-  allocation->graphics->planet_loca.y = dimensions[1];
-  allocation->graphics->width  = dimensions[2];
-  allocation->graphics->height = dimensions[3];
+  allocation->parent_mapping.x = dimensions[0]; // will these be max screen size for all windows?
+  allocation->parent_mapping.y = dimensions[1];
+  allocation->asset_width  = dimensions[2];
+  allocation->asset_height = dimensions[3];
 
   allocation->suborbital = 0;
   allocation->identity = id;
@@ -87,7 +88,7 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
   allocation->dis = head_orbital ? head_orbital->dis : XOpenDisplay(":0");
 
   if (isWindow || isRoot) { // create window or use instantiate
-  allocation->graphics->planet =
+  allocation->planet->asset =
       isRoot
       ? RootWindow(allocation->dis, DefaultScreen(allocation->dis))
       : XCreateWindow(allocation->dis, DefaultRootWindow(allocation->dis), dimensions[0],
@@ -97,11 +98,13 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
       /*border*/5, /*depth*/24, /*class*/0, /*Visual*/0, /*attr values*/0, (XSetWindowAttributes *)0);
 
     if (!isRoot) {
-    XSetStandardProperties(allocation->dis, allocation->graphics->planet, title, subtitle, 0, 0, 0, 0);
-    XSelectInput(allocation->dis, allocation->graphics->planet, ExposureMask|ButtonPressMask|KeyPressMask);
-    XClearWindow(allocation->dis, allocation->graphics->planet);
-    XMapRaised(allocation->dis,   allocation->graphics->planet);
+    XSetStandardProperties(allocation->dis, allocation->planet->asset, title, subtitle, 0, 0, 0, 0);
+    XSelectInput(allocation->dis, allocation->planet->asset, ExposureMask|ButtonPressMask|KeyPressMask);
+    XClearWindow(allocation->dis, allocation->planet->asset);
+    XMapRaised(allocation->dis,   allocation->planet->asset);
     }
+
+  allocation->planet->gc = XCreateGC(allocation->dis, allocation->planet->asset, 0, (XGCValues *)0);
 
   XFlush(allocation->dis);
   } else {
@@ -109,7 +112,6 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
   (*allocation->root_orbital->instantiate)( &context ); // function should copy or create Pixmap
   }
   // if Drawable is still not set, should do something here
-  allocation->graphics->gc = XCreateGC(allocation->dis, allocation->graphics->planet, /*GC values*/0, (XGCValues *)0);
 
 
   if (*base_orbital == 0) {
@@ -165,31 +167,59 @@ return attr.height;
 
 void makeBuffer(void *handle, int width, int height, int parentX, int parentY, char needMask) {
 struct user_context *cxt = (struct user_context *)handle;
-cxt->current_orbital->graphics->planet =
+cxt->current_orbital->planet->asset =
   XCreatePixmap(
     cxt->current_orbital->dis,
-    cxt->current_orbital->root_orbital->graphics->planet,
+    cxt->current_orbital->root_orbital->planet->asset,
     width, height,
-    DDepth(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->graphics->planet)
+    DDepth(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset)
   );
 
-  cxt->current_orbital->graphics->width  = width;
-  cxt->current_orbital->graphics->height = height;
-  cxt->current_orbital->graphics->planet_loca.x = parentX; // for XCopyArea calls
-  cxt->current_orbital->graphics->planet_loca.y = parentY;
+  cxt->current_orbital->planet->gc = 
+    XCreateGC(cxt->current_orbital->dis, cxt->current_orbital->planet->asset, /*GC values*/0, (XGCValues *)0);
+
+  cxt->current_orbital->asset_width  = width;
+  cxt->current_orbital->asset_height = height;
+  cxt->current_orbital->parent_mapping.x = parentX; // for XCopyArea calls
+  cxt->current_orbital->parent_mapping.y = parentY;
 
   if (needMask) {
-    cxt->current_orbital->graphics->planet_mask =
+    XGCValues attributes;
+    attributes.function = GXor;
+    attributes.background = 0;
+    attributes.foreground = 1;
+    cxt->current_orbital->mask = malloc(sizeof(struct gcontext));
+    cxt->current_orbital->mask->asset =
     XCreatePixmap(
       cxt->current_orbital->dis,
-      cxt->current_orbital->root_orbital->graphics->planet,
+      cxt->current_orbital->root_orbital->planet->asset,
       width, height,
       2
     );
+    cxt->current_orbital->mask->gc = 
+      XCreateGC(cxt->current_orbital->dis, cxt->current_orbital->mask->asset, GCFunction | GCBackground | GCForeground, (XGCValues *)0);
+
   }
 }
 
+// These two are useful for copying window information without recreating window
+void referenceSiblingBuffer(void *handle) {
+struct user_context *cxt = (struct user_context *)handle;
+
+}
+
+void referenceSiblingMask(void *handle) {
+struct user_context *cxt = (struct user_context *)handle;
+
+}
+// These two are useful for copying window information without recreating window
+
 void copySiblingBuffer(void *handle) {
+struct user_context *cxt = (struct user_context *)handle;
+
+}
+
+void copySiblingMask(void *handle) {
 struct user_context *cxt = (struct user_context *)handle;
 
 }
@@ -201,17 +231,31 @@ cxt->isEditingBuffer = 1;
 
 void EditMask(void *handle) {
 struct user_context *cxt = (struct user_context *)handle;
-cxt->isEditingBuffer = 0;
+cxt->isEditingBuffer = cxt->current_orbital->mask ? 0 : 1;
 }
 
-void RegionFill(void *handle, int x, int y, int height, int width, long long rgb) {
+void RegionFill(void *handle, int x, int y, int height, int width, long long rgb) { 
 struct user_context *cxt = (struct user_context *)handle;
+GC gc = cxt->isEditingBuffer ? cxt->current_orbital->planet->gc
+                             : cxt->current_orbital->mask->gc;
 
+Drawable asset = cxt->isEditingBuffer ? cxt->current_orbital->planet->asset
+                                      : cxt->current_orbital->mask->asset;
+
+XSetForeground(cxt->current_orbital->dis, gc, rgb);
+XFillRectangle(cxt->current_orbital->dis, asset, gc, x, y, width, height);
 }
 
 void RegionScarf(void *handle, int x, int y, int height, int width, long long rgb) {
 struct user_context *cxt = (struct user_context *)handle;
+GC gc = cxt->isEditingBuffer ? cxt->current_orbital->planet->gc
+                             : cxt->current_orbital->mask->gc;
 
+Drawable asset = cxt->isEditingBuffer ? cxt->current_orbital->planet->asset
+                                      : cxt->current_orbital->mask->asset;
+
+XSetForeground(cxt->current_orbital->dis, gc, rgb);
+XDrawRectangle(cxt->current_orbital->dis, asset, gc, x, y, width, height);
 }
 
 void DrawPixel(void *handle, int x, int y) {
@@ -219,7 +263,7 @@ struct user_context *cxt = (struct user_context *)handle;
 
 }
 
-void RegionFromBits(void *handle, char *bits) {
+void RegionFromBits(void *handle, int scale, char *bits) {
 struct user_context *cxt = (struct user_context *)handle;
 
 }
@@ -231,15 +275,73 @@ head_orbital->instantiate = template;
 
 void Default(void *handle) { // For now, assumes root orbital is Window
 struct user_context *cxt = (struct user_context *)handle;
-makeBuffer(handle, WW(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->graphics->planet),
-                   WH(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->graphics->planet), 0, 0, 0);
+makeBuffer(handle, WW(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset),
+                   WH(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset), 0, 0, 0);
 }
 
 
 void Graft(); // how would this even work with head_orbital?
 
+void effectuate(struct orbital *p, struct orbital *c) {
+char parentNeedsMask = p->mask ? 0 : 1;
+char childNeedsMask  = c->mask ? 0 : 1;
+
+  if (!childNeedsMask && parentNeedsMask) {
+  XGCValues attributes;
+  attributes.function = GXor;
+  attributes.foreground = 1;
+  attributes.background = 0;
+  p->mask = malloc(sizeof(struct gcontext));
+  p->mask->asset = XCreatePixmap(p->dis, p->root_orbital->planet->asset, p->asset_width, p->asset_height, 2);
+  p->mask->gc = XCreateGC(p->dis, p->mask->asset, GCFunction | GCBackground | GCForeground, &attributes);
+  // the above should or the two together
+  }
+
+  if (!childNeedsMask) {
+  XCopyArea(p->dis, c->mask->asset, p->mask->asset, p->mask->gc, 0, 0,
+            c->asset_width, c->asset_height, c->parent_mapping.x, c->parent_mapping.y);
+  XSetClipMask(p->dis, p->planet->gc, p->mask->asset);
+  }
+
+
+  XCopyArea(p->dis, c->planet->asset, p->planet->asset, p->planet->gc, 0, 0,
+            c->asset_width, c->asset_height, c->parent_mapping.x, c->parent_mapping.y);
+  // the above draws child into parent
+  XFlush(p->dis);
+
+  if (!childNeedsMask) { // unset mask
+  XSetClipMask(p->dis, p->planet->gc, (Drawable)0);
+  }
+
+  if (!childNeedsMask && parentNeedsMask) {
+  // deallocate
+  p->mask = 0;
+  }
+}
+
+void recurse(struct orbital *parent) {
+  struct orbital *child = parent->suborbital;
+  struct orbital *original = parent->suborbital;
+
+  while (child->next != original) {
+    child = child->next;
+    if (child->suborbital) {
+      recurse(child);
+    }
+    effectuate(parent, child);
+  }
+  if (original->suborbital) {
+    recurse(original);
+  }
+  effectuate(parent, original);
+}
+
 void Draw() {
-// draw all to buffer just above head_orbital by ascending twice and 
+  if (head_orbital) {
+    if (head_orbital->suborbital) {
+    recurse(head_orbital);
+    }
+  }
 }
 
 // add routines for clearing background
