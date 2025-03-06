@@ -4,6 +4,40 @@
 #include <X11/cursorfont.h>
 #include <stdio.h>
 
+/*
+ *
+ * Author: Matthew Louden
+ *
+ * Dates:
+ *  March 2nd 2025 {XI Start}
+ *  March 3rd 2025 {XI successful window}
+ *  March 4th 2025 {Draw}
+ *  March 5th 2025 {AlignXY, makeMask, GlorbHandle}
+ *
+ *
+ * Notes:
+ *  This library assumes all windows are the exact width and height of the root window
+ *
+ *  Question: How do we obtain the width and height of a window (on screen)?
+ *    The answer to this question defeats the above notion
+ *
+ *  What if the answer is X11 exposure events? {Mar 5th: went with this idea}
+ *
+ *  Most tiling window managers make the dimensions field for XSetAttributes obsolete
+ *
+ *  Assumption: XSync, XPending, and XFlush will all eventually need to be used
+ *
+ *  Assumption: an exposure event is always generated at window creation
+ *
+ *  Assumption: The visable part of any window will never exceed the total root window width, height
+ *
+ *  Assumption: Can draw outside of Pixmap borders in the same way that one can draw outside a real window's bounds
+ *
+ *  Assumption: GXor will just work
+ *
+ *
+ */
+
 struct coord {
 int x, y;
 };
@@ -18,6 +52,13 @@ char isEditingBuffer;
 struct orbital *current_orbital;
 };
 
+struct event_node {
+KeySym key;
+XEvent event;
+struct event_node *anterior;
+struct event_node *posterior;
+};
+
 struct orbital {
 Display *dis;
 
@@ -28,13 +69,10 @@ struct gcontext *mask; // is already a boolean
 // may need to steal this pointer
 // in the future (think orange tile)
 
-XEvent event;
-KeySym key;
-char text[255];
+struct event_node *history;
 
 void (*select)(void *);
 void (*unselect)(void *);
-void (*draw)(void *); // looking less and less useful
 void (*instantiate)(void *);
 int identity;
 
@@ -43,6 +81,8 @@ struct orbital *suborbital;
 struct orbital *root_orbital;
 
 };
+
+enum funcType {Glorb, UnGlorb, InstaGlorb};
 
 struct cache {
 char t;
@@ -57,6 +97,8 @@ int h;
 static struct orbital *head_orbital = 0;
 
 void Default(void *);
+int WW(Display *, Drawable);
+int WH(Display *, Drawable);
 
 void XI(const char *title, const char *subtitle, const int dimensions[4], char isRoot, char isWindow, char base, int id) {
 
@@ -84,20 +126,25 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
 
   allocation->root_orbital = head_orbital ? head_orbital : allocation;
   allocation->instantiate = head_orbital ? head_orbital->instantiate : &Default;
+  allocation->unselect = head_orbital ? head_orbital->unselect : 0;
+  allocation->select = head_orbital ? head_orbital->select : 0;
+
 
   allocation->dis = head_orbital ? head_orbital->dis : XOpenDisplay(":0");
 
   if (isWindow || isRoot) { // create window or use instantiate
-  allocation->planet->asset =
-      isRoot
-      ? RootWindow(allocation->dis, DefaultScreen(allocation->dis))
-      : XCreateWindow(allocation->dis, DefaultRootWindow(allocation->dis), dimensions[0],
+  allocation->planet->asset = RootWindow(allocation->dis, DefaultScreen(allocation->dis));
+  allocation->asset_width  = WW(allocation->dis, allocation->planet->asset);
+  allocation->asset_height = WH(allocation->dis, allocation->planet->asset);
+
+    if (!isRoot) {
+    allocation->planet->asset =
+        XCreateWindow(allocation->dis, DefaultRootWindow(allocation->dis), dimensions[0],
                                                                            dimensions[1],
                                                                            dimensions[2],
                                                                            dimensions[3],
       /*border*/5, /*depth*/24, /*class*/0, /*Visual*/0, /*attr values*/0, (XSetWindowAttributes *)0);
 
-    if (!isRoot) {
     XSetStandardProperties(allocation->dis, allocation->planet->asset, title, subtitle, 0, 0, 0, 0);
     XSelectInput(allocation->dis, allocation->planet->asset, ExposureMask|ButtonPressMask|KeyPressMask);
     XClearWindow(allocation->dis, allocation->planet->asset);
@@ -107,8 +154,11 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
   allocation->planet->gc = XCreateGC(allocation->dis, allocation->planet->asset, 0, (XGCValues *)0);
 
   XFlush(allocation->dis);
+
+  allocation->history = (struct event_node *)1; // TODO: make this point to first exposure event
+
   } else {
-  struct user_context context = {1, allocation}; // default is not editing mask
+  struct user_context context = {1, allocation}; // default is not editing mask // should we hand this back to user?
   (*allocation->root_orbital->instantiate)( &context ); // function should copy or create Pixmap
   }
   // if Drawable is still not set, should do something here
@@ -147,6 +197,140 @@ void AlignID(int *alignment, int align_granularity) { // may spin forever lookin
   }
 }
 
+char within(int x, int y, struct orbital *child) {
+  x -= child->parent_mapping.x;
+  y -= child->parent_mapping.y;
+  return !( x < 0 || y < 0 || x > child->asset_width || y > child->asset_height );
+}
+
+void AlignXY(int x, int y) {
+  struct orbital **base = &( head_orbital->suborbital ); // don't grab root
+  struct orbital *origin;
+  struct orbital *result;
+  struct orbital *scan;
+
+  char isWithin;
+
+  while (*base) {
+    scan = *base;
+    origin = scan;
+
+    while ( scan->next != origin ) {
+    scan = scan->next;
+    isWithin = within(x, y, scan);
+      if ( isWithin && !result ) {
+      x -= scan->parent_mapping.x;
+      y -= scan->parent_mapping.y;
+      result = scan;
+      } else if ( isWithin && result ) {
+      return;
+      }
+    }
+
+  isWithin = within(x, y, origin);
+
+    if ( isWithin && !result ) {
+    x -= origin->parent_mapping.x;
+    y -= origin->parent_mapping.y;
+    result = scan;
+    } else if ( isWithin && result ) {
+    return;
+    }
+
+    if (result) {
+    *base = result;
+    }
+
+  base = &( (*base)->suborbital );
+  }
+}
+
+void AscendSelect() {
+struct orbital *climb = head_orbital;
+  while (climb) {
+    if (climb->select) {
+    ( *(climb->select) )(climb);
+    }
+  climb = climb->suborbital;
+  }
+}
+
+void AscendUnselect() {
+struct orbital *climb = head_orbital;
+  while (climb) {
+    if (climb->unselect) {
+    ( *(climb->unselect) )(climb);
+    }
+  climb = climb->suborbital;
+  }
+}
+
+void *actuateTier(enum funcType type, void *handle) {
+struct user_context *cxt = (struct user_context *)handle;
+struct orbital *scan = cxt->current_orbital;
+struct orbital *original = scan;
+struct user_context *ret = malloc(sizeof(struct user_context));
+ret->isEditingBuffer = 1;
+
+void (*temporary)(void *);
+
+  while (scan->next != original) {
+  scan = scan->next;
+  temporary = (type == Glorb) ? scan->select : scan->unselect;
+    if (temporary) {
+    ret->current_orbital = scan;
+    ( *(temporary) )(scan);
+    }
+  }
+
+return ret;
+
+}
+
+void *TierSelect(void *handle) { // except for self
+return actuateTier(Glorb, handle);
+}
+
+void *TierUnselect(void *handle) { // excepting self
+return actuateTier(UnGlorb, handle);
+}
+
+void TradeRoutine(enum funcType type, void *h1, void *h2) {
+struct user_context *cxt1 = (struct user_context *)h1;
+struct user_context *cxt2 = (struct user_context *)h2;
+void (* temporary)(void *);
+
+  switch (type) {
+    case Glorb:
+    temporary = cxt2->current_orbital->select;
+    cxt2->current_orbital->select = cxt1->current_orbital->select;
+    cxt1->current_orbital->select = temporary;
+    break;
+    case UnGlorb:
+    temporary = cxt2->current_orbital->unselect;
+    cxt2->current_orbital->unselect = cxt1->current_orbital->unselect;
+    cxt1->current_orbital->select = temporary;
+    break;
+    case InstaGlorb:
+    temporary = cxt2->current_orbital->instantiate;
+    cxt2->current_orbital->instantiate = cxt1->current_orbital->instantiate;
+    cxt1->current_orbital->select = temporary;
+    break;
+  }
+
+}
+
+void *GlorbHandle(int tier) {
+struct orbital *climb = head_orbital;
+struct user_context *ret = malloc(sizeof(struct user_context));
+  while (tier--) {
+  climb = climb->suborbital;
+  }
+ret->isEditingBuffer = 1;
+ret->current_orbital = climb;
+return ret;
+}
+
 int DDepth(Display *dis, Drawable intake) {
 XWindowAttributes attr;
 XGetWindowAttributes(dis, intake, &attr);
@@ -165,7 +349,28 @@ XGetWindowAttributes(dis, intake, &attr);
 return attr.height;
 }
 
-void makeBuffer(void *handle, int width, int height, int parentX, int parentY, char needMask) {
+void makeMask(void *handle) {
+struct user_context *cxt = (struct user_context *)handle;
+XGCValues attributes;
+attributes.function = GXor;
+attributes.background = 0;
+attributes.foreground = 1;
+cxt->current_orbital->mask = malloc(sizeof(struct gcontext));
+
+cxt->current_orbital->mask->asset =
+  XCreatePixmap(
+   cxt->current_orbital->dis,
+   cxt->current_orbital->root_orbital->planet->asset, // TODO: should only do this if root_orbital is Window 
+   cxt->current_orbital->asset_width, cxt->current_orbital->asset_height,
+   2
+  );
+
+cxt->current_orbital->mask->gc = 
+  XCreateGC(cxt->current_orbital->dis, cxt->current_orbital->mask->asset, GCFunction | GCBackground | GCForeground, (XGCValues *)0);
+
+}
+
+void makeBuffer(void *handle, int parentX, int parentY, int width, int height) {
 struct user_context *cxt = (struct user_context *)handle;
 cxt->current_orbital->planet->asset =
   XCreatePixmap(
@@ -183,27 +388,10 @@ cxt->current_orbital->planet->asset =
   cxt->current_orbital->parent_mapping.x = parentX; // for XCopyArea calls
   cxt->current_orbital->parent_mapping.y = parentY;
 
-  if (needMask) {
-    XGCValues attributes;
-    attributes.function = GXor;
-    attributes.background = 0;
-    attributes.foreground = 1;
-    cxt->current_orbital->mask = malloc(sizeof(struct gcontext));
-    cxt->current_orbital->mask->asset =
-    XCreatePixmap(
-      cxt->current_orbital->dis,
-      cxt->current_orbital->root_orbital->planet->asset,
-      width, height,
-      2
-    );
-    cxt->current_orbital->mask->gc = 
-      XCreateGC(cxt->current_orbital->dis, cxt->current_orbital->mask->asset, GCFunction | GCBackground | GCForeground, (XGCValues *)0);
-
-  }
 }
 
 // These two are useful for copying window information without recreating window
-void referenceSiblingBuffer(void *handle) {
+void referenceSiblingBuffer(void *handle) { // TODO: All buffer related work
 struct user_context *cxt = (struct user_context *)handle;
 
 }
@@ -258,29 +446,59 @@ XSetForeground(cxt->current_orbital->dis, gc, rgb);
 XDrawRectangle(cxt->current_orbital->dis, asset, gc, x, y, width, height);
 }
 
-void DrawPixel(void *handle, int x, int y) {
+void DrawPixel(void *handle, int x, int y) { // TODO: 
 struct user_context *cxt = (struct user_context *)handle;
 
 }
 
-void RegionFromBits(void *handle, int scale, char *bits) {
+void RegionFromBits(void *handle, int scale, char *bits, int width, int height) { // TODO: 
 struct user_context *cxt = (struct user_context *)handle;
 
 }
 
-void RegisterTemplate(void (*template)(void *), int rootID) {
+void RegionFromRotatedBits(void *handle, int scale, char *bits, int width, int height) {
+struct user_context *cxt = (struct user_context *)handle;
+
+}
+
+void RegisterFunc(enum funcType type, void (*template)(void *)) {
+  switch (type) {
+    case Glorb:
+    head_orbital->select = template;
+    break;
+    case UnGlorb:
+    head_orbital->unselect = template;
+    break;
+    case InstaGlorb:
+    head_orbital->instantiate = template;
+    break;
+  }
+}
+
+void RegisterFuncID(enum funcType type, void (*template)(void *), int rootID) {
+int prevID = head_orbital->identity;
 AlignID((int [1]){rootID}, 1);
-head_orbital->instantiate = template;
+RegisterFunc(type, template);
+AlignID((int [1]){prevID}, 1);
 }
 
 void Default(void *handle) { // For now, assumes root orbital is Window
 struct user_context *cxt = (struct user_context *)handle;
-makeBuffer(handle, WW(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset),
-                   WH(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset), 0, 0, 0);
+makeBuffer(handle, 0, 0, WW(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset),
+                         WH(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset));
 }
 
 
-void Graft(); // how would this even work with head_orbital?
+void Graft(void *h1, void *h2) {
+struct user_context *cxt1 = (struct user_context *)h1;
+struct user_context *cxt2 = (struct user_context *)h2;
+struct orbital *temporary;
+
+temporary = cxt1->current_orbital->suborbital;
+cxt1->current_orbital->suborbital = cxt2->current_orbital->suborbital;
+cxt2->current_orbital->suborbital = temporary;
+
+}
 
 void effectuate(struct orbital *p, struct orbital *c) {
 char parentNeedsMask = p->mask ? 0 : 1;
