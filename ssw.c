@@ -111,6 +111,7 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
   allocation = malloc(sizeof(struct orbital));
   allocation->planet = malloc(sizeof(struct gcontext));
   allocation->mask   = 0;
+  allocation->isEditingBuffer = 1;
 
   allocation->parent_mapping.x = dimensions[0]; // will these be max screen size for all windows?
   allocation->parent_mapping.y = dimensions[1];
@@ -151,11 +152,10 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
 
   XFlush(allocation->dis);
 
-  allocation->history = (struct event_node *)1; // TODO: make this point to first exposure event
+  allocation->history = malloc(sizeof(struct event_node)); // TODO: make this point to first exposure event
 
   } else {
-  struct user_context context = {1, allocation}; // default is not editing mask // should we hand this back to user?
-  (*allocation->root_orbital->instantiate)( &context ); // function should copy or create Pixmap
+  (*allocation->root_orbital->instantiate)( allocation ); // function should copy or create Pixmap
   }
   // if Drawable is still not set, should do something here
 
@@ -205,9 +205,12 @@ void AlignXY(int x, int y) {
   struct orbital *result;
   struct orbital *scan;
 
+  int result_x, result_y;
+
   char isWithin;
 
   while (*base) {
+    result = 0;
     scan = *base;
     origin = scan;
 
@@ -215,8 +218,8 @@ void AlignXY(int x, int y) {
     scan = scan->next;
     isWithin = within(x, y, scan);
       if ( isWithin && !result ) {
-      x -= scan->parent_mapping.x;
-      y -= scan->parent_mapping.y;
+      result_x = x - scan->parent_mapping.x;
+      result_y = y - scan->parent_mapping.y;
       result = scan;
       } else if ( isWithin && result ) {
       return;
@@ -226,8 +229,8 @@ void AlignXY(int x, int y) {
   isWithin = within(x, y, origin);
 
     if ( isWithin && !result ) {
-    x -= origin->parent_mapping.x;
-    y -= origin->parent_mapping.y;
+    result_x = x - origin->parent_mapping.x;
+    result_y = y - origin->parent_mapping.y;
     result = scan;
     } else if ( isWithin && result ) {
     return;
@@ -236,6 +239,9 @@ void AlignXY(int x, int y) {
     if (result) {
     *base = result;
     }
+
+  x = result_x;
+  y = result_y;
 
   base = &( (*base)->suborbital );
   }
@@ -262,11 +268,10 @@ struct orbital *climb = head_orbital;
 }
 
 void *actuateTier(enum funcType type, void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 struct orbital *scan = cxt;
 struct orbital *original = scan;
-struct user_context *ret = malloc(sizeof(struct user_context));
-ret->isEditingBuffer = 1;
+struct orbital *ret = 0;
 
 void (*temporary)(void *);
 
@@ -292,8 +297,12 @@ return actuateTier(UnGlorb, handle);
 }
 
 void TradeRoutine(enum funcType type, void *h1, void *h2) {
-struct user_context *cxt1 = (struct user_context *)h1;
-struct user_context *cxt2 = (struct user_context *)h2;
+  if (h1 == 0 || h2 == 0) {
+  return;
+  } 
+
+struct orbital *cxt1 = (struct orbital *)h1;
+struct orbital *cxt2 = (struct orbital *)h2;
 void (* temporary)(void *);
 
   switch (type) {
@@ -318,13 +327,14 @@ void (* temporary)(void *);
 
 void *GlorbHandle(int tier) {
 struct orbital *climb = head_orbital;
-struct user_context *ret = malloc(sizeof(struct user_context));
-  while (tier--) {
+  if (!tier) {
+  return climb;
+  }
+
+  while (--tier) {
   climb = climb->suborbital;
   }
-ret->isEditingBuffer = 1;
-ret = climb;
-return ret;
+return climb;
 }
 
 int bitfill(int depth) {
@@ -350,7 +360,7 @@ return attr.height;
 }
 
 void makeMask(void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 XGCValues attributes;
 attributes.function = GXor;
 attributes.background = 0;
@@ -371,7 +381,7 @@ cxt->mask->gc =
 }
 
 void makeBuffer(void *handle, int parentX, int parentY, int width, int height) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 cxt->planet->asset =
   XCreatePixmap(
     cxt->dis,
@@ -385,50 +395,58 @@ cxt->planet->asset =
 
   cxt->asset_width  = width;
   cxt->asset_height = height;
-  cxt->parent_mapping.x = parentX; // for XCopyArea calls
-  cxt->parent_mapping.y = parentY;
+
 
 }
 
 // These two are useful for copying window information without recreating window
 void referenceSiblingBuffer(void *handle) { // TODO: All buffer related work
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 
 }
 
 void referenceSiblingMask(void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 
 }
 // These two are useful for copying window information without recreating window
 
 void copySiblingBuffer(void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 
 }
 
 void copySiblingMask(void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 
 }
 
 void EditBuffer(void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 cxt->isEditingBuffer = 1;
 }
 
 void EditMask(void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 cxt->isEditingBuffer = cxt->mask ? 0 : 1;
 }
 
 void InvertMask(void *handle) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
+  XGCValues attributes;
+  attributes.function = GXxor;
+  Pixmap inv = XCreatePixmap(cxt->dis, cxt->root_orbital->planet->asset,
+                             cxt->asset_width, cxt->asset_height, 2);
 
+  GC gc = XCreateGC(cxt->dis, inv, GCFunction, &attributes);
+
+  XCopyArea(cxt->dis, inv, cxt->mask->asset, gc, 0, 0, cxt->asset_width, cxt->asset_height, 0, 0);
+
+  // deallocate pixmap, gc, etc
 }
 
 void RegionFill(void *handle, int x, int y, int height, int width, long long rgb) { 
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 GC gc = cxt->isEditingBuffer ? cxt->planet->gc
                              : cxt->mask->gc;
 
@@ -440,7 +458,7 @@ XFillRectangle(cxt->dis, asset, gc, x, y, width, height);
 }
 
 void RegionScarf(void *handle, int x, int y, int height, int width, long long rgb) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 GC gc = cxt->isEditingBuffer ? cxt->planet->gc
                              : cxt->mask->gc;
 
@@ -452,7 +470,7 @@ XDrawRectangle(cxt->dis, asset, gc, x, y, width, height);
 }
 
 void DrawPixel(void *handle, int x, int y, long long rgb) { // TODO: 
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 GC gc = cxt->isEditingBuffer ? cxt->planet->gc
                              : cxt->mask->gc;
 
@@ -463,22 +481,51 @@ XSetForeground(cxt->dis, gc, rgb);
 XDrawPoint(cxt->dis, asset, gc, x, y);
 }
 
-void BufferFromBits(void *handle, int scale, char *bits, int width, int height, long long fore, long long back) { // TODO: 
-struct user_context *cxt = (struct user_context *)handle;
-XCreatePixmapFromBitmapData(display, d, data, width, height, fg, bg, depth)
+void MaskFromBits(void *handle, int scale, char *bits, int width, int height) { // TODO:
+struct orbital *cxt = (struct orbital *)handle;
+  if (scale == 1) {
+  cxt->mask->asset = XCreatePixmapFromBitmapData(cxt->dis, cxt->root_orbital->planet->asset, bits, width, height, 1, 0, 2);
+  } else {
+  XGCValues attributes;
+  attributes.foreground = 1;
+  attributes.background = 0;
+  cxt->mask->gc = XCreateGC(cxt->dis, 0, GCForeground | GCBackground, &attributes);
+  cxt->mask->asset = XCreatePixmap(cxt->dis, cxt->root_orbital->planet->asset, width, height, 2);
+    for (int i = 0; i < height; i++) {
+      for (int j = 0; j < width; j++) {
+        if ( !( ( bits[i * (width / 8) + j / 8]>>(j&7) )&1 ) ) {
+        XDrawRectangle(cxt->dis, cxt->mask->asset, cxt->mask->gc, i, j, scale, scale);
+        }
+      }
+    }
+  }
 }
 
-void BufferFromBits(void *handle, int scale, char *bits, int width, int height) { // TODO: 
-struct user_context *cxt = (struct user_context *)handle;
-XCreatePixmapFromBitmapData(display, d, data, width, height, fg, bg, depth)
-}
+void BitDraw(void *handle, int scale, char rotation, char *bits, int x, int y,
+             int width, int height, long long fore, long long back) {
 
-void BufferFromRotatedBits(void *handle, int scale, char rotation, char *bits, int width, int height) {
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 
-} // cardinal dirs
+Pixmap asset = cxt->isEditingBuffer ? cxt->planet->asset : cxt->mask->asset;
+GC gc = cxt->isEditingBuffer ? cxt->planet->gc : cxt->mask->gc;
 
-void BitsToBuffer(void *handle) {
+int i_offx, i_offy, offx, offy, maxx, maxy;
+char condx = (rotation&1)  ^ (rotation>>1);
+char condy = (rotation&1) == (rotation>>1);
+
+maxx = condx ? height : width;
+maxy = condy ? height : width;
+
+  for (int i = 0; i < height; i++) {
+    for (int j = 0; j < width; j++) {
+    i_offx = condx ? i : j;
+    i_offy = condy ? i : j;
+    offx = rotation==1 ? maxx - i_offx - 1 : i_offx;
+    offy = rotation==3 ? maxy - i_offy - 1 : i_offy;
+    XSetForeground(cxt->dis, gc, ( bits[i * (width / 8) + j / 8]>>(j&7) )&1 ? back : fore);
+    XDrawRectangle(cxt->dis, asset, gc, x + scale * offx, y + scale * offy, scale, scale);
+    }
+  }
 
 }
 
@@ -504,15 +551,15 @@ AlignID((int [1]){prevID}, 1);
 }
 
 void Default(void *handle) { // For now, assumes root orbital is Window
-struct user_context *cxt = (struct user_context *)handle;
+struct orbital *cxt = (struct orbital *)handle;
 makeBuffer(handle, 0, 0, WW(cxt->dis, cxt->root_orbital->planet->asset),
                          WH(cxt->dis, cxt->root_orbital->planet->asset));
 }
 
 
 void Graft(void *h1, void *h2) {
-struct user_context *cxt1 = (struct user_context *)h1;
-struct user_context *cxt2 = (struct user_context *)h2;
+struct orbital *cxt1 = (struct orbital *)h1;
+struct orbital *cxt2 = (struct orbital *)h2;
 struct orbital *temporary;
 
 temporary = cxt1->suborbital;
@@ -593,31 +640,11 @@ exit(op);
 
 
 
-/*
-void Clean(char d){
-XFreeGC(context[d].dis, context[d].gc);
-XDestroyWindow(context[d].dis, context[d].win);
-XCloseDisplay(context[d].dis);
-}
-
-void RegionFill(int x, int y, int h, int w, unsigned long color, char d){
-XSetForeground(context[d].dis, context[d].gc, color);
-XFillRectangle(context[d].dis, context[d].win, context[d].gc, x , y, h, w);
-}
-
-void RegionScarf(int x, int y, int h, int w, unsigned long color, char d){
-XSetForeground(context[d].dis, context[d].gc, color);
-XDrawRectangle(context[d].dis, context[d].win, context[d].gc, x-1, y-1, h, w);
-}
-
-void Point(int x, int y, unsigned long color, char d) {
-XSetForeground(context[d].dis, context[d].gc, color);
-XDrawPoint(context[d].dis, context[d].win, context[d].gc, x, y);
-}
 
 // oh good god
-void Eve(struct cache *cc, char d){
-char kill = 0; 
+void Eve(struct cache *cc){
+// head_orbital->history = ;
+// allocated line 155
 
 cc->t =   0;
 cc->b =   0;
@@ -625,33 +652,28 @@ cc->txt = 0;
 cc->x =   0;
 cc->y =   0;
 
-XNextEvent(context[d].dis, &context[d].event);
-	if (context[d].event.type==Expose) {
-	cc->t = 3;
-	}
-        if (context[d].event.type==ButtonPress) {
+XWindowEvent(head_orbital->dis, head_orbital->planet->asset, ExposureMask|/*causes event on flush*/ButtonPressMask|KeyPressMask, &(head_orbital->history->event));
+
+  while (1) {
+        if (head_orbital->history->event.type == Expose) {
+        cc->t = 3;
+        return;
+        } else if (head_orbital->history->event.type == ButtonPress) {
         cc->t = 2;
-        cc->b = context[d].event.xbutton.button;
-        cc->x = context[d].event.xbutton.x;
-        cc->y = context[d].event.xbutton.y;
+        cc->b = head_orbital->history->event.xbutton.button;
+        cc->x = head_orbital->history->event.xbutton.x;
+        cc->y = head_orbital->history->event.xbutton.y;
+        return;
+        } else if (head_orbital->history->event.type == KeyPress) {
+        XLookupString(&(head_orbital->history->event.xkey), malloc(1), 1/*buffersize*/, &(head_orbital->history->key), 0);
+        cc->t = 1;
+        cc->txt = head_orbital->history->key;
+        return;
         }
-        if (context[d].event.type==2) {
-	XLookupString(&context[d].event.xkey,context[d].text,255,&context[d].key,0);
-                if (context[d].text[0]==27) { // failsafe quit
-                        kill = 1;
-                } else {
-                cc->t = 1;
-                cc->txt = context[d].key;
-                }
-        }
-	if (kill){
-	Clean(d);
-	exit(0);
-	}
+  XWindowEvent(head_orbital->dis, head_orbital->planet->asset, ExposureMask|ButtonPressMask|KeyPressMask, &(head_orbital->history->event));
+  }
+
 }
 
-int Pend(char d){
-return XPending(context[d].dis);
-}
-*/
+
 
