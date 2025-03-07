@@ -47,11 +47,6 @@ Drawable asset;
 GC gc;
 };
 
-struct user_context {
-char isEditingBuffer;
-struct orbital *current_orbital;
-};
-
 struct event_node {
 KeySym key;
 XEvent event;
@@ -64,6 +59,7 @@ Display *dis;
 
 struct coord parent_mapping;
 int asset_height, asset_width;
+char isEditingBuffer;
 struct gcontext *planet; // prev graphics
 struct gcontext *mask; // is already a boolean
 // may need to steal this pointer
@@ -267,7 +263,7 @@ struct orbital *climb = head_orbital;
 
 void *actuateTier(enum funcType type, void *handle) {
 struct user_context *cxt = (struct user_context *)handle;
-struct orbital *scan = cxt->current_orbital;
+struct orbital *scan = cxt;
 struct orbital *original = scan;
 struct user_context *ret = malloc(sizeof(struct user_context));
 ret->isEditingBuffer = 1;
@@ -278,7 +274,7 @@ void (*temporary)(void *);
   scan = scan->next;
   temporary = (type == Glorb) ? scan->select : scan->unselect;
     if (temporary) {
-    ret->current_orbital = scan;
+    ret = scan;
     ( *(temporary) )(scan);
     }
   }
@@ -302,19 +298,19 @@ void (* temporary)(void *);
 
   switch (type) {
     case Glorb:
-    temporary = cxt2->current_orbital->select;
-    cxt2->current_orbital->select = cxt1->current_orbital->select;
-    cxt1->current_orbital->select = temporary;
+    temporary = cxt2->select;
+    cxt2->select = cxt1->select;
+    cxt1->select = temporary;
     break;
     case UnGlorb:
-    temporary = cxt2->current_orbital->unselect;
-    cxt2->current_orbital->unselect = cxt1->current_orbital->unselect;
-    cxt1->current_orbital->select = temporary;
+    temporary = cxt2->unselect;
+    cxt2->unselect = cxt1->unselect;
+    cxt1->select = temporary;
     break;
     case InstaGlorb:
-    temporary = cxt2->current_orbital->instantiate;
-    cxt2->current_orbital->instantiate = cxt1->current_orbital->instantiate;
-    cxt1->current_orbital->select = temporary;
+    temporary = cxt2->instantiate;
+    cxt2->instantiate = cxt1->instantiate;
+    cxt1->select = temporary;
     break;
   }
 
@@ -327,8 +323,12 @@ struct user_context *ret = malloc(sizeof(struct user_context));
   climb = climb->suborbital;
   }
 ret->isEditingBuffer = 1;
-ret->current_orbital = climb;
+ret = climb;
 return ret;
+}
+
+int bitfill(int depth) {
+return (1<<depth) - 1;
 }
 
 int DDepth(Display *dis, Drawable intake) {
@@ -355,38 +355,38 @@ XGCValues attributes;
 attributes.function = GXor;
 attributes.background = 0;
 attributes.foreground = 1;
-cxt->current_orbital->mask = malloc(sizeof(struct gcontext));
+cxt->mask = malloc(sizeof(struct gcontext));
 
-cxt->current_orbital->mask->asset =
+cxt->mask->asset =
   XCreatePixmap(
-   cxt->current_orbital->dis,
-   cxt->current_orbital->root_orbital->planet->asset, // TODO: should only do this if root_orbital is Window 
-   cxt->current_orbital->asset_width, cxt->current_orbital->asset_height,
+   cxt->dis,
+   cxt->root_orbital->planet->asset, // TODO: should only do this if root_orbital is Window 
+   cxt->asset_width, cxt->asset_height,
    2
   );
 
-cxt->current_orbital->mask->gc = 
-  XCreateGC(cxt->current_orbital->dis, cxt->current_orbital->mask->asset, GCFunction | GCBackground | GCForeground, (XGCValues *)0);
+cxt->mask->gc = 
+  XCreateGC(cxt->dis, cxt->mask->asset, GCFunction | GCBackground | GCForeground, (XGCValues *)0);
 
 }
 
 void makeBuffer(void *handle, int parentX, int parentY, int width, int height) {
 struct user_context *cxt = (struct user_context *)handle;
-cxt->current_orbital->planet->asset =
+cxt->planet->asset =
   XCreatePixmap(
-    cxt->current_orbital->dis,
-    cxt->current_orbital->root_orbital->planet->asset,
+    cxt->dis,
+    cxt->root_orbital->planet->asset,
     width, height,
-    DDepth(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset)
+    DDepth(cxt->dis, cxt->root_orbital->planet->asset)
   );
 
-  cxt->current_orbital->planet->gc = 
-    XCreateGC(cxt->current_orbital->dis, cxt->current_orbital->planet->asset, /*GC values*/0, (XGCValues *)0);
+  cxt->planet->gc = 
+    XCreateGC(cxt->dis, cxt->planet->asset, /*GC values*/0, (XGCValues *)0);
 
-  cxt->current_orbital->asset_width  = width;
-  cxt->current_orbital->asset_height = height;
-  cxt->current_orbital->parent_mapping.x = parentX; // for XCopyArea calls
-  cxt->current_orbital->parent_mapping.y = parentY;
+  cxt->asset_width  = width;
+  cxt->asset_height = height;
+  cxt->parent_mapping.x = parentX; // for XCopyArea calls
+  cxt->parent_mapping.y = parentY;
 
 }
 
@@ -419,45 +419,66 @@ cxt->isEditingBuffer = 1;
 
 void EditMask(void *handle) {
 struct user_context *cxt = (struct user_context *)handle;
-cxt->isEditingBuffer = cxt->current_orbital->mask ? 0 : 1;
+cxt->isEditingBuffer = cxt->mask ? 0 : 1;
+}
+
+void InvertMask(void *handle) {
+struct user_context *cxt = (struct user_context *)handle;
+
 }
 
 void RegionFill(void *handle, int x, int y, int height, int width, long long rgb) { 
 struct user_context *cxt = (struct user_context *)handle;
-GC gc = cxt->isEditingBuffer ? cxt->current_orbital->planet->gc
-                             : cxt->current_orbital->mask->gc;
+GC gc = cxt->isEditingBuffer ? cxt->planet->gc
+                             : cxt->mask->gc;
 
-Drawable asset = cxt->isEditingBuffer ? cxt->current_orbital->planet->asset
-                                      : cxt->current_orbital->mask->asset;
+Drawable asset = cxt->isEditingBuffer ? cxt->planet->asset
+                                      : cxt->mask->asset;
 
-XSetForeground(cxt->current_orbital->dis, gc, rgb);
-XFillRectangle(cxt->current_orbital->dis, asset, gc, x, y, width, height);
+XSetForeground(cxt->dis, gc, rgb);
+XFillRectangle(cxt->dis, asset, gc, x, y, width, height);
 }
 
 void RegionScarf(void *handle, int x, int y, int height, int width, long long rgb) {
 struct user_context *cxt = (struct user_context *)handle;
-GC gc = cxt->isEditingBuffer ? cxt->current_orbital->planet->gc
-                             : cxt->current_orbital->mask->gc;
+GC gc = cxt->isEditingBuffer ? cxt->planet->gc
+                             : cxt->mask->gc;
 
-Drawable asset = cxt->isEditingBuffer ? cxt->current_orbital->planet->asset
-                                      : cxt->current_orbital->mask->asset;
+Drawable asset = cxt->isEditingBuffer ? cxt->planet->asset
+                                      : cxt->mask->asset;
 
-XSetForeground(cxt->current_orbital->dis, gc, rgb);
-XDrawRectangle(cxt->current_orbital->dis, asset, gc, x, y, width, height);
+XSetForeground(cxt->dis, gc, rgb);
+XDrawRectangle(cxt->dis, asset, gc, x, y, width, height);
 }
 
-void DrawPixel(void *handle, int x, int y) { // TODO: 
+void DrawPixel(void *handle, int x, int y, long long rgb) { // TODO: 
 struct user_context *cxt = (struct user_context *)handle;
+GC gc = cxt->isEditingBuffer ? cxt->planet->gc
+                             : cxt->mask->gc;
 
+Drawable asset = cxt->isEditingBuffer ? cxt->planet->asset
+                                      : cxt->mask->asset;
+
+XSetForeground(cxt->dis, gc, rgb);
+XDrawPoint(cxt->dis, asset, gc, x, y);
 }
 
-void RegionFromBits(void *handle, int scale, char *bits, int width, int height) { // TODO: 
+void BufferFromBits(void *handle, int scale, char *bits, int width, int height, long long fore, long long back) { // TODO: 
 struct user_context *cxt = (struct user_context *)handle;
-
+XCreatePixmapFromBitmapData(display, d, data, width, height, fg, bg, depth)
 }
 
-void RegionFromRotatedBits(void *handle, int scale, char *bits, int width, int height) {
+void BufferFromBits(void *handle, int scale, char *bits, int width, int height) { // TODO: 
 struct user_context *cxt = (struct user_context *)handle;
+XCreatePixmapFromBitmapData(display, d, data, width, height, fg, bg, depth)
+}
+
+void BufferFromRotatedBits(void *handle, int scale, char rotation, char *bits, int width, int height) {
+struct user_context *cxt = (struct user_context *)handle;
+
+} // cardinal dirs
+
+void BitsToBuffer(void *handle) {
 
 }
 
@@ -484,8 +505,8 @@ AlignID((int [1]){prevID}, 1);
 
 void Default(void *handle) { // For now, assumes root orbital is Window
 struct user_context *cxt = (struct user_context *)handle;
-makeBuffer(handle, 0, 0, WW(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset),
-                         WH(cxt->current_orbital->dis, cxt->current_orbital->root_orbital->planet->asset));
+makeBuffer(handle, 0, 0, WW(cxt->dis, cxt->root_orbital->planet->asset),
+                         WH(cxt->dis, cxt->root_orbital->planet->asset));
 }
 
 
@@ -494,9 +515,9 @@ struct user_context *cxt1 = (struct user_context *)h1;
 struct user_context *cxt2 = (struct user_context *)h2;
 struct orbital *temporary;
 
-temporary = cxt1->current_orbital->suborbital;
-cxt1->current_orbital->suborbital = cxt2->current_orbital->suborbital;
-cxt2->current_orbital->suborbital = temporary;
+temporary = cxt1->suborbital;
+cxt1->suborbital = cxt2->suborbital;
+cxt2->suborbital = temporary;
 
 }
 
