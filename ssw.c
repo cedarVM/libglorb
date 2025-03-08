@@ -13,7 +13,8 @@
  *  March 3rd 2025 {XI successful window}
  *  March 4th 2025 {Draw}
  *  March 5th 2025 {AlignXY, makeMask, GlorbHandle}
- *
+ *  March 7th 2025 {Buffer/Mask offordances, Basic Events, Fixed Selection funcs}
+ *  {Decided on 1-based indexing for tiers, Pending}
  *
  * Notes:
  *  This library assumes all windows are the exact width and height of the root window
@@ -35,7 +36,15 @@
  *
  *  Assumption: GXor will just work
  *
- *
+ * TODO:
+ * Maintain separate event queues
+ *  Single function for retrieving from each Queue
+ *  Exposure / ButtonPress / ButtonRelease
+ *  Pointer from ButtonPress event to ButtonRelease event
+ *  Only maintain a {user input} amount of events in orbital.history
+ * DrawCircle / DrawArc / DrawX Routines
+ * XCheckIfEvent
+ * Registration of Event Handlers
  */
 
 struct coord {
