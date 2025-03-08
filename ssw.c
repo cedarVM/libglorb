@@ -173,6 +173,31 @@ void XI(const char *title, const char *subtitle, const int dimensions[4], char i
 
 }
 
+void RemapTier(void *handle, int *x, int *y, int n, int tier) {
+struct orbital *base = head_orbital;
+struct orbital *scan;
+
+  if (!tier) {
+  // maybe perform on all tiers?
+  }
+
+  while (--tier && base) {
+  base = base->suborbital;
+  }
+
+  if (!base) {
+  return;
+  }
+
+  scan = base;
+  for (int i = 0; i < n; i++) {
+  scan->parent_mapping.x = x[i];
+  scan->parent_mapping.y = y[i];
+  scan = scan->next;
+  }
+
+}
+
 void Align(int *alignment, int align_granularity) { // aligns by delta
   struct orbital **base = &head_orbital;
   for (int i = 0; i < align_granularity; i++) {
@@ -325,13 +350,14 @@ void (* temporary)(void *);
 
 }
 
-void *GlorbHandle(int tier) {
+void *GlorbHandle(int tier) { // tier is NOT zero-index
+                              // both tier = 0 and tier = 1, return head_orbit
 struct orbital *climb = head_orbital;
   if (!tier) {
   return climb;
   }
 
-  while (--tier) {
+  while (--tier && climb) {
   climb = climb->suborbital;
   }
 return climb;
@@ -400,25 +426,34 @@ cxt->planet->asset =
 }
 
 // These two are useful for copying window information without recreating window
-void referenceSiblingBuffer(void *handle) { // TODO: All buffer related work
+void referenceSiblingBuffer(void *handle) {
 struct orbital *cxt = (struct orbital *)handle;
-
+cxt->parent_mapping.x = cxt->next->parent_mapping.x;
+cxt->parent_mapping.y = cxt->next->parent_mapping.y;
+cxt->asset_height = cxt->next->asset_height;
+cxt->asset_width  = cxt->next->asset_width;
+cxt->planet = cxt->next->planet;
 }
 
 void referenceSiblingMask(void *handle) {
-struct orbital *cxt = (struct orbital *)handle;
-
+struct orbital *cxt = (struct orbital *)handle; // this causes a potential freeing nightmare
+                                                // but let's not worry about that right now 
+cxt->mask = cxt->next->mask;
 }
 // These two are useful for copying window information without recreating window
 
 void copySiblingBuffer(void *handle) {
 struct orbital *cxt = (struct orbital *)handle;
-
+makeBuffer(handle, cxt->parent_mapping.x, cxt->parent_mapping.y, cxt->asset_width, cxt->asset_height);
+XCopyArea(cxt->root_orbital->dis, cxt->planet->asset, cxt->next->planet->asset,
+          cxt->planet->gc, 0, 0, cxt->asset_width, cxt->asset_height, 0, 0);
 }
 
 void copySiblingMask(void *handle) {
 struct orbital *cxt = (struct orbital *)handle;
-
+makeMask(handle);
+XCopyArea(cxt->root_orbital->dis, cxt->mask->asset, cxt->next->mask->asset,
+          cxt->mask->gc, 0, 0, cxt->asset_width, cxt->asset_height, 0, 0);
 }
 
 void EditBuffer(void *handle) {
@@ -638,10 +673,6 @@ void XX(char op) {
 exit(op);
 }
 
-
-
-
-// oh good god
 void Eve(struct cache *cc){
 // head_orbital->history = ;
 // allocated line 155
@@ -675,5 +706,22 @@ XWindowEvent(head_orbital->dis, head_orbital->planet->asset, ExposureMask|/*caus
 
 }
 
+Bool invisible(Display *display, XEvent *event, XPointer arg) {
+  if (event->xany.window == head_orbital->planet->asset && (event->type == Expose || event->type == ButtonPress || event->type == KeyPress) ) {
+  return 1;
+  }
+return 0;
+}
 
+char EvePending() {
+char ret = XCheckIfEvent(head_orbital->dis, &(head_orbital->history->event), invisible, 0);
+XPutBackEvent(head_orbital->dis, &(head_orbital->history->event));
+return ret;
+}
 
+// add:
+// ExposeEvent(&c)
+// MouseUpEvent(&c)
+// KeyUpEvent(&c)
+// MouseDownEvent(&c)
+// while maintaining our own queues of user-set length
